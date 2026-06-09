@@ -1,21 +1,19 @@
+
 # =========================================================
 # AI POWERED SDR / COMMUNICATION LAB
 # =========================================================
 # FEATURES
 # =========================================================
-# ✔ Professional Cyberpunk GUI
-# ✔ AI Signal Classification
-# ✔ AM / DSB-SC / SSB-SC
+# ✔ AM / DSB-SC / SSB-SC / FM
 # ✔ Real-Time FFT
 # ✔ Waterfall Spectrum
 # ✔ Oscilloscope
 # ✔ Audio Output
-# ✔ Smart DSP Effects
 # ✔ Mouse Drawing
 # ✔ Keyboard Waveform Generator
-# ✔ AI Noise Detection
-# ✔ Real-Time Signal Analyzer
-# ✔ Professional SDR Appearance
+# ✔ AI Signal Classification
+# ✔ Noise Simulation
+# ✔ Professional Cyberpunk GUI
 # =========================================================
 
 # INSTALL:
@@ -25,11 +23,7 @@ import sys
 import numpy as np
 import sounddevice as sd
 
-from scipy.signal import (
-    hilbert,
-    butter,
-    filtfilt
-)
+from scipy.signal import hilbert, butter, filtfilt
 
 from sklearn.ensemble import RandomForestClassifier
 
@@ -57,16 +51,12 @@ import pyqtgraph as pg
 fs = 44100
 N = 4096
 
-x = np.linspace(0, 1, N)
+t = np.arange(N) / fs
 
 message = np.zeros(N)
 
-carrier_freq = 500
-mod_index = 0.8
-noise_level = 0.02
-
 # =========================================================
-# AUDIO
+# AUDIO OUTPUT
 # =========================================================
 
 stream = sd.OutputStream(
@@ -78,16 +68,15 @@ stream = sd.OutputStream(
 stream.start()
 
 # =========================================================
-# AI MODEL
+# AI TRAINING
 # =========================================================
 
 X_train = []
 y_train = []
 
-# Generate simple training data
-for i in range(50):
+for _ in range(50):
 
-    sine = np.sin(2*np.pi*5*x)
+    sine = np.sin(2*np.pi*5*t)
 
     square = np.sign(sine)
 
@@ -98,7 +87,6 @@ for i in range(50):
         np.std(sine),
         np.max(sine)
     ])
-
     y_train.append("SINE")
 
     X_train.append([
@@ -106,7 +94,6 @@ for i in range(50):
         np.std(square),
         np.max(square)
     ])
-
     y_train.append("SQUARE")
 
     X_train.append([
@@ -114,7 +101,6 @@ for i in range(50):
         np.std(noise),
         np.max(noise)
     ])
-
     y_train.append("NOISE")
 
 clf = RandomForestClassifier()
@@ -122,7 +108,7 @@ clf = RandomForestClassifier()
 clf.fit(X_train, y_train)
 
 # =========================================================
-# DSP
+# DSP UTILITIES
 # =========================================================
 
 def normalize(sig):
@@ -135,23 +121,31 @@ def normalize(sig):
     return sig / mx
 
 
-def lowpass(sig):
+def lowpass(sig, cutoff=4000):
 
-    b, a = butter(5, 0.02)
+    nyq = fs / 2
+
+    b, a = butter(
+        5,
+        cutoff / nyq
+    )
 
     return filtfilt(b, a, sig)
 
+# =========================================================
+# MODULATION
+# =========================================================
 
 def am_modulation(msg, fc, ka):
 
-    carrier = np.cos(2*np.pi*fc*x)
+    carrier = np.cos(2*np.pi*fc*t)
 
     return (1 + ka*msg) * carrier
 
 
 def dsb_sc_modulation(msg, fc):
 
-    carrier = np.cos(2*np.pi*fc*x)
+    carrier = np.cos(2*np.pi*fc*t)
 
     return msg * carrier
 
@@ -163,10 +157,23 @@ def ssb_sc_modulation(msg, fc):
     h = np.imag(analytic)
 
     return (
-        msg*np.cos(2*np.pi*fc*x)
-        - h*np.sin(2*np.pi*fc*x)
+        msg*np.cos(2*np.pi*fc*t)
+        - h*np.sin(2*np.pi*fc*t)
     )
 
+
+def fm_modulation(msg, fc, kf=500):
+
+    integral = np.cumsum(msg) / fs
+
+    return np.cos(
+        2*np.pi*fc*t +
+        2*np.pi*kf*integral
+    )
+
+# =========================================================
+# DEMODULATION
+# =========================================================
 
 def envelope_detector(sig):
 
@@ -174,22 +181,37 @@ def envelope_detector(sig):
 
     rec = lowpass(rectified)
 
-    rec = rec - np.mean(rec)
+    rec -= np.mean(rec)
 
     return normalize(rec)
 
 
 def coherent_detector(sig, fc):
 
-    local = np.cos(2*np.pi*fc*x)
+    local = np.cos(2*np.pi*fc*t)
 
     mixed = sig * local
 
     rec = lowpass(mixed)
 
-    rec = rec - np.mean(rec)
+    rec -= np.mean(rec)
 
     return normalize(rec)
+
+
+def fm_demodulation(sig):
+
+    analytic = hilbert(sig)
+
+    phase = np.unwrap(np.angle(analytic))
+
+    demod = np.diff(phase)
+
+    demod = np.append(demod, 0)
+
+    demod -= np.mean(demod)
+
+    return normalize(demod)
 
 # =========================================================
 # MAIN WINDOW
@@ -233,14 +255,14 @@ class AISDR(QWidget):
 
         controls = QHBoxLayout()
 
-        # Frequency
+        # Carrier Frequency
         self.freq_slider = QSlider(Qt.Horizontal)
 
-        self.freq_slider.setMinimum(50)
+        self.freq_slider.setMinimum(100)
 
         self.freq_slider.setMaximum(5000)
 
-        self.freq_slider.setValue(500)
+        self.freq_slider.setValue(1000)
 
         controls.addWidget(QLabel("Carrier"))
 
@@ -272,18 +294,19 @@ class AISDR(QWidget):
 
         controls.addWidget(self.noise_slider)
 
-        # Mode
+        # Mode Selection
         self.mode_box = QComboBox()
 
         self.mode_box.addItems([
             "AM",
             "DSB-SC",
-            "SSB-SC"
+            "SSB-SC",
+            "FM"
         ])
 
         controls.addWidget(self.mode_box)
 
-        # Clear
+        # Clear Button
         self.clear_btn = QPushButton("CLEAR")
 
         controls.addWidget(self.clear_btn)
@@ -366,24 +389,15 @@ class AISDR(QWidget):
         )
 
         self.curve1 = self.plot1.plot(
-            pen=pg.mkPen(
-                (255,255,0),
-                width=2
-            )
+            pen=pg.mkPen((255,255,0), width=2)
         )
 
         self.curve2 = self.plot2.plot(
-            pen=pg.mkPen(
-                (0,255,255),
-                width=2
-            )
+            pen=pg.mkPen((0,255,255), width=2)
         )
 
         self.curve3 = self.plot3.plot(
-            pen=pg.mkPen(
-                (255,0,0),
-                width=2
-            )
+            pen=pg.mkPen((255,0,0), width=2)
         )
 
         scope_layout.addWidget(self.plot1)
@@ -413,10 +427,7 @@ class AISDR(QWidget):
         )
 
         self.fft_curve = self.fft_plot.plot(
-            pen=pg.mkPen(
-                (0,255,0),
-                width=2
-            )
+            pen=pg.mkPen((0,255,0), width=2)
         )
 
         fft_layout.addWidget(self.fft_plot)
@@ -471,10 +482,7 @@ class AISDR(QWidget):
         )
 
         self.audio_curve = self.audio_plot.plot(
-            pen=pg.mkPen(
-                (255,100,255),
-                width=2
-            )
+            pen=pg.mkPen((255,100,255), width=2)
         )
 
         audio_layout.addWidget(self.audio_plot)
@@ -512,7 +520,7 @@ class AISDR(QWidget):
             self.clear_signal
         )
 
-        # Mouse Drawing
+        # Mouse drawing
         self.plot1.scene().sigMouseMoved.connect(
             self.mouse_draw
         )
@@ -527,7 +535,7 @@ class AISDR(QWidget):
         self.timer.start(50)
 
     # =====================================================
-    # STYLE
+    # PLOT STYLE
     # =====================================================
 
     def setup_plot(self, plot, title):
@@ -564,7 +572,7 @@ class AISDR(QWidget):
 
         yp = mousePoint.y()
 
-        idx = int(xp * N)
+        idx = int(xp * N / t[-1])
 
         if 0 <= idx < N:
 
@@ -576,9 +584,7 @@ class AISDR(QWidget):
 
                     smooth = (
                         yp
-                        * np.exp(
-                            -i*i/100
-                        )
+                        * np.exp(-i*i/100)
                     )
 
                     message[idx+i] = np.clip(
@@ -636,7 +642,7 @@ class AISDR(QWidget):
         )
 
     # =====================================================
-    # PROCESS
+    # PROCESS SIGNAL
     # =====================================================
 
     def process_signal(self):
@@ -653,9 +659,9 @@ class AISDR(QWidget):
 
         msg = normalize(message)
 
-        # ================================================
+        # =================================================
         # MODULATION
-        # ================================================
+        # =================================================
 
         if mode == "AM":
 
@@ -672,21 +678,28 @@ class AISDR(QWidget):
                 fc
             )
 
-        else:
+        elif mode == "SSB-SC":
 
             tx = ssb_sc_modulation(
                 msg,
                 fc
             )
 
-        # ================================================
+        elif mode == "FM":
+
+            tx = fm_modulation(
+                msg,
+                fc
+            )
+
+        # =================================================
         # CHANNEL
-        # ================================================
+        # =================================================
 
         fading = (
             1
             + 0.2*np.sin(
-                2*np.pi*2*x
+                2*np.pi*2*t
             )
         )
 
@@ -702,13 +715,17 @@ class AISDR(QWidget):
 
         rx = np.clip(rx, -2, 2)
 
-        # ================================================
+        # =================================================
         # DEMODULATION
-        # ================================================
+        # =================================================
 
         if mode == "AM":
 
             rec = envelope_detector(rx)
+
+        elif mode == "FM":
+
+            rec = fm_demodulation(rx)
 
         else:
 
@@ -717,9 +734,9 @@ class AISDR(QWidget):
                 fc
             )
 
-        # ================================================
-        # AUDIO
-        # ================================================
+        # =================================================
+        # AUDIO OUTPUT
+        # =================================================
 
         audio = normalize(rec)
 
@@ -727,21 +744,21 @@ class AISDR(QWidget):
             audio.astype(np.float32)
         )
 
-        # ================================================
+        # =================================================
         # FFT
-        # ================================================
+        # =================================================
 
         fft_data = np.abs(
             np.fft.fft(rx)
         )
 
-        fft_half = 20 * np.log10(
+        fft_half = 20*np.log10(
             fft_data[:N//2] + 1e-6
         )
 
-        # ================================================
+        # =================================================
         # WATERFALL
-        # ================================================
+        # =================================================
 
         self.waterfall_data = np.roll(
             self.waterfall_data,
@@ -756,36 +773,36 @@ class AISDR(QWidget):
             autoLevels=False
         )
 
-        # ================================================
-        # AI
-        # ================================================
+        # =================================================
+        # AI ANALYSIS
+        # =================================================
 
         self.ai_analysis(
             msg,
             noise
         )
 
-        # ================================================
+        # =================================================
         # UPDATE PLOTS
-        # ================================================
+        # =================================================
 
         self.curve1.setData(
-            x,
+            t,
             msg
         )
 
         self.curve2.setData(
-            x,
+            t,
             tx
         )
 
         self.curve3.setData(
-            x,
+            t,
             rx
         )
 
         self.audio_curve.setData(
-            x,
+            t,
             rec
         )
 
@@ -807,16 +824,14 @@ class AISDR(QWidget):
         if key == Qt.Key_S:
 
             message[:] = np.sin(
-                2*np.pi*5*x
+                2*np.pi*5*t
             )
 
         # SQUARE
         elif key == Qt.Key_Q:
 
             message[:] = np.sign(
-                np.sin(
-                    2*np.pi*5*x
-                )
+                np.sin(2*np.pi*5*t)
             )
 
         # TRIANGLE
@@ -825,10 +840,8 @@ class AISDR(QWidget):
             message[:] = (
                 2*np.abs(
                     2*(
-                        x*5
-                        - np.floor(
-                            x*5 + 0.5
-                        )
+                        t*5
+                        - np.floor(t*5 + 0.5)
                     )
                 ) - 1
             )
@@ -856,7 +869,7 @@ app = QApplication(sys.argv)
 app.setStyle("Fusion")
 
 # =========================================================
-# PROFESSIONAL THEME
+# THEME
 # =========================================================
 
 app.setStyleSheet("""
@@ -919,3 +932,4 @@ window = AISDR()
 window.show()
 
 sys.exit(app.exec_())
+
